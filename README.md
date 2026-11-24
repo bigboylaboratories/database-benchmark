@@ -45,20 +45,34 @@ Profiles set the data size: `smoke` (2k rows), `quick` (20k), `standard` (200k) 
 You can override any value with `--rows`, `--ops`, `--commits`, `--clients` or `--duration`.
 Use `-w point_select,concurrent_reads` to run only some workloads.
 
-## Benchmarking a virtual Raspberry Pi
+## Benchmarking virtual machines (Linux servers and Raspberry Pis)
+
+All the VMs run on one Linux host. `scripts/qemu-vm.sh` creates an Ubuntu VM with whatever
+cores, RAM, CPU limit and disk speed you ask for, either x86_64 or ARM64:
 
 ```bash
-./scripts/qemu-pi.sh                      # Pi 4-like: Cortex-A72, 4 cores, 2 GB
-ssh -p 2222 bench@localhost               # password: bench
-# inside the VM:
-git clone <this repo> && cd database-benchmark && ./scripts/bootstrap.sh
-source .venv/bin/activate
-dbbench run -b all -p quick -l qemu-rpi4-4c-2g
+PRESET=x86-4c ./scripts/qemu-vm.sh                    # 4-core / 4 GB x86_64 Linux server
+PRESET=pi4    ./scripts/qemu-vm.sh                    # Raspberry Pi 4-like ARM64 board
+ARCH=x86_64 CORES=6 MEM=12G ./scripts/qemu-vm.sh      # any custom size
+PRESET=x86-4c CPU_LIMIT=200% ./scripts/qemu-vm.sh     # 4 vCPUs, only 2 cores of host time
+PRESET=x86-2c DISK_MBPS=25 DISK_IOPS=500 ./scripts/qemu-vm.sh   # slow disk
 ```
 
-Copy the result JSON back (`scp -P 2222 bench@localhost:database-benchmark/results/*.json results/`)
-and run `dbbench report`. See [docs/vm-setup.md](docs/vm-setup.md) for other Pi models,
-VirtualBox and cloud VMs, and how to read the core check.
+Presets: `x86-1c` `x86-2c` `x86-4c` `x86-8c` `x86-16c`, `arm-2c` `arm-4c` `arm-8c`, and
+`pi3` `pi4` `pi4-8g` `pi5`. `./scripts/qemu-pi.sh` is a shortcut for the Pi presets.
+
+Then, in the VM:
+
+```bash
+ssh -p 2222 bench@localhost               # password: bench
+git clone <this repo> && cd database-benchmark && ./scripts/bootstrap.sh
+source .venv/bin/activate
+dbbench run -b all -p quick               # label defaults to the VM name, e.g. x86-4c
+```
+
+Copy the result JSON back (`scp -P 2222 'bench@localhost:database-benchmark/results/*.json' results/`),
+shut the VM down, start the next one and run `dbbench report`. See [docs/vm-setup.md](docs/vm-setup.md)
+for every setting, how to change a machine and how to read the core check.
 
 ## Useful options
 
@@ -79,7 +93,7 @@ dbbench/            the CLI (sysinfo, run, report)
   backends/         sqlite + postgres adapters (same SQL on both)
   runner.py         repeats, stats, JSON output
   report.py         cross-machine markdown/CSV comparison
-scripts/            bootstrap.sh (target setup), qemu-pi.sh (ARM64 Pi-like VM)
+scripts/            bootstrap.sh (target setup), qemu-vm.sh (any VM), qemu-pi.sh (Pi shortcut)
 docs/vm-setup.md    VM recipes and interpretation notes
 results/            result JSON files (git-ignored; `git add -f` the ones to keep)
 ```
@@ -90,8 +104,10 @@ results/            result JSON files (git-ignored; `git add -f` the ones to kee
   per-query round-trip overhead is part of what you measure. This difference is real for apps.
 - Run PostgreSQL **on the machine under test**. A remote server measures the network.
 - Close other workloads, and use `-n 5` or more on noisy VMs. Check `stdev_ops_per_s` in the JSON.
-- Under QEMU emulation (TCG) on an x86 host, absolute numbers are much lower than real Pi
-  hardware. Use them to compare configurations, not to stand in for a real Pi.
+- VMs with the same architecture as the host (x86_64 VMs on an x86_64 PC) use KVM and run
+  close to native speed. Other architectures (ARM64/Pi VMs on an x86 PC) are emulated and much
+  slower, so compare them with each other, not with real hardware.
+- Run one VM at a time. They share the host's CPU and disk.
 
 ## Tests
 

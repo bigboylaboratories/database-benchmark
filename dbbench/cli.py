@@ -59,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("-p", "--profile", choices=list(PROFILES), default="quick")
     r.add_argument("-w", "--workloads", help=f"comma list from: {','.join(WORKLOADS)}")
     r.add_argument("-n", "--repeats", type=int, default=3)
-    r.add_argument("-l", "--label", help="machine label, e.g. 'qemu-rpi4-4c-2g' (default: hostname)")
+    r.add_argument("-l", "--label", help="machine label, e.g. 'x86-4c' or 'pi4' (default: hostname)")
     r.add_argument("--rows", type=int)
     r.add_argument("--ops", type=int)
     r.add_argument("--commits", type=int)

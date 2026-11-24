@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dbbench"
 version = "0.1.0"
-description = "Benchmark PostgreSQL and SQLite across physical and virtual machines (e.g. emulated Raspberry Pi)"
+description = "Benchmark PostgreSQL and SQLite across Linux machines and VMs (x86_64, ARM64, Raspberry Pi-like)"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = []
