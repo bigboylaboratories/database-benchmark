@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+build/
+dist/
+# benchmark outputs (commit selectively with `git add -f`)
+results/*.json
+results/*.csv
+results/*.md
+*.db
+*.db-wal
+*.db-shm
+# VM images
+vm/
+*.img
+*.qcow2

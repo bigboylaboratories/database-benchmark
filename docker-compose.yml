@@ -1,0 +1,18 @@
+# Local PostgreSQL for benchmarking. Resource limits let you mimic a smaller machine:
+#   PG_CPUS=4 PG_MEM=1g docker compose up -d
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: bench
+      POSTGRES_PASSWORD: bench
+      POSTGRES_DB: bench
+    ports:
+      - "5432:5432"
+    cpus: ${PG_CPUS:-0}        # 0 = no limit
+    mem_limit: ${PG_MEM:-0}    # 0 = no limit
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bench"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
