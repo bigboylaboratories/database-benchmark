@@ -17,3 +17,5 @@ results/*.md
 vm/
 *.img
 *.qcow2
+# git bundles made for manual pushing
+*.bundle
