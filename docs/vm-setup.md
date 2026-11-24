@@ -23,7 +23,7 @@ PCIe, a fragile USB network, a RAM cap and a slow SD card model. You can't run P
 usefully on them. The `virt` + Cortex-A72 setup matches the Pi's core type, count and RAM,
 which are the parts that matter for these benchmarks.
 
-**Acceleration:** on an ARM64 Linux host with `/dev/kvm`, or on Apple Silicon (hvf), the
+**Acceleration:** on an ARM64 Linux host with `/dev/kvm`, the
 script uses hardware virtualization and the numbers come close to real ARM silicon. On x86
 hosts it falls back to multi-threaded TCG emulation, roughly 5–20× slower. That is still
 useful for comparing *relative* behaviour, such as core scaling and SQLite vs Postgres.

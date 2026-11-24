@@ -12,6 +12,7 @@
 #
 # Then:  ssh -p 2222 bench@localhost   (password: bench)
 #
+# Host: Linux (Debian/Ubuntu).
 # Requires: qemu-system-aarch64, qemu-efi-aarch64 (UEFI firmware), qemu-utils,
 #           cloud-image-utils (cloud-localds), curl.
 #   sudo apt-get install qemu-system-arm qemu-efi-aarch64 qemu-utils cloud-image-utils curl
@@ -60,8 +61,7 @@ CLOUD
 fi
 
 FIRMWARE=""
-for f in /usr/share/qemu-efi-aarch64/QEMU_EFI.fd /usr/share/AAVMF/AAVMF_CODE.fd \
-         /opt/homebrew/share/qemu/edk2-aarch64-code.fd /usr/local/share/qemu/edk2-aarch64-code.fd; do
+for f in /usr/share/qemu-efi-aarch64/QEMU_EFI.fd /usr/share/AAVMF/AAVMF_CODE.fd; do
   [ -f "$f" ] && FIRMWARE="$f" && break
 done
 [ -n "$FIRMWARE" ] || { echo "UEFI firmware not found (install qemu-efi-aarch64)"; exit 1; }
@@ -70,8 +70,6 @@ done
 ACCEL="tcg,thread=multi"
 if [ "$(uname -m)" = "aarch64" ] && [ -w /dev/kvm ]; then
   ACCEL="kvm"; CPU="host"
-elif [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-  ACCEL="hvf"; CPU="host"
 fi
 
 echo ">> booting $NAME: $CORES cores, $MEM RAM, cpu=$CPU, accel=$ACCEL (ssh -p $SSH_PORT bench@localhost)"
