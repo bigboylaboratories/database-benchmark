@@ -6,8 +6,12 @@ wall time, so the runner can compute throughput and percentiles uniformly.
 
 from __future__ import annotations
 
+import multiprocessing as mp
+import os
+import queue
 import random
 import string
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -134,46 +138,135 @@ def aggregate(backend: Backend, p: Params) -> Result:
                  lambda r: (), seed_offset=5)
 
 
-def concurrent_reads(backend: Backend, p: Params) -> Result:
-    """p.clients threads issuing point selects for p.duration seconds (exercises multiple cores)."""
-    sql = backend.sql("SELECT id, k, v, n FROM bench_items WHERE id = ?")
-    stop = threading.Event()
-    all_lat: List[List[float]] = [[] for _ in range(p.clients)]
-    errors: List[BaseException] = []
-    barrier = threading.Barrier(p.clients + 1)
+_LAT_SAMPLE = 50_000  # latencies kept per client (reservoir sample) to bound memory/IPC
 
-    def worker(idx: int) -> None:
-        rng = random.Random(p.seed + 100 + idx)
+
+def _is_busy(e: BaseException) -> bool:
+    """SQLite lock timeout ("database is locked") under heavy write contention."""
+    return "locked" in str(e).lower() or "busy" in str(e).lower()
+
+
+def _client_process(backend: Backend, p: Params, idx: int, write_pct: int,
+                    barrier, stop, out) -> None:
+    """One multi-user client, in its own process so it is not limited by the GIL.
+
+    Each operation is a point read, or (write_pct % of the time) a single-row UPDATE
+    committed on its own, i.e. many users each saving small changes.
+    """
+    rng = random.Random(p.seed + 100 + idx + 1000 * write_pct)
+    count, writes, busy, sample = 0, 0, 0, []
+    conn = None
+    try:
         conn = backend.connect()
-        lat = all_lat[idx]
-        try:
-            cur = conn.cursor()
-            barrier.wait()
-            while not stop.is_set():
-                t = time.perf_counter()
-                cur.execute(sql, (rng.randrange(p.rows),))
+        cur = conn.cursor()
+        read_sql = backend.sql("SELECT id, k, v, n FROM bench_items WHERE id = ?")
+        write_sql = backend.sql("UPDATE bench_items SET n = n + 1, v = ? WHERE id = ?")
+        cur.execute(read_sql, (0,))  # warm up the connection / statement before timing
+        cur.fetchall()
+        conn.commit()
+        barrier.wait()
+        while not stop.value:  # lock-free shared flag: no cross-process contention per query
+            is_write = write_pct and rng.randrange(100) < write_pct
+            t = time.perf_counter()
+            if is_write:
+                try:
+                    cur.execute(write_sql, (_payload(rng, 16), rng.randrange(p.rows)))
+                    conn.commit()
+                except Exception as e:
+                    if not _is_busy(e):
+                        raise
+                    conn.rollback()
+                    busy += 1
+                    continue
+                writes += 1
+            else:
+                cur.execute(read_sql, (rng.randrange(p.rows),))
                 cur.fetchall()
-                lat.append(time.perf_counter() - t)
-            conn.commit()
-        except BaseException as e:  # surface errors from threads
-            errors.append(e)
-        finally:
+                if write_pct:
+                    conn.commit()  # don't hold a read snapshot open across other users' writes
+            dt = time.perf_counter() - t
+            count += 1
+            if len(sample) < _LAT_SAMPLE:
+                sample.append(dt)
+            else:
+                j = rng.randrange(count)
+                if j < _LAT_SAMPLE:
+                    sample[j] = dt
+        conn.commit()
+        out.put((idx, count, writes, busy, sample, None))
+    except BaseException as e:  # report to the parent instead of dying silently
+        try:
+            barrier.abort()
+        except Exception:
+            pass
+        out.put((idx, 0, 0, 0, [], f"{type(e).__name__}: {e}"))
+    finally:
+        if conn is not None:
             conn.close()
 
-    threads = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(p.clients)]
-    for t in threads:
-        t.start()
-    barrier.wait()
+
+def _multi_user(backend: Backend, p: Params, write_pct: int, name: str) -> Result:
+    """p.clients processes, each running operations for p.duration seconds."""
+    ctx = mp.get_context("fork" if hasattr(os, "fork") and sys.platform != "darwin" else "spawn")
+    barrier = ctx.Barrier(p.clients + 1)
+    stop = ctx.RawValue("b", 0)
+    out = ctx.Queue()
+    procs = [ctx.Process(target=_client_process, args=(backend, p, i, write_pct, barrier, stop, out),
+                         daemon=True)
+             for i in range(p.clients)]
+    for pr in procs:
+        pr.start()
+    try:
+        barrier.wait(timeout=120)  # all clients connected and warmed up
+    except threading.BrokenBarrierError:
+        pass  # a client failed; its error is collected below
     start = time.perf_counter()
-    time.sleep(p.duration)
-    stop.set()
-    for t in threads:
-        t.join()
+    if not barrier.broken:
+        time.sleep(p.duration)
+    stop.value = 1
     wall = time.perf_counter() - start
+
+    results, errors = [], []
+    for _ in procs:
+        try:
+            idx, count, writes, busy, sample, err = out.get(timeout=120)
+        except queue.Empty:
+            errors.append("client process did not report (crashed?)")
+            break
+        (errors.append(f"client {idx}: {err}") if err else results.append((count, writes, busy, sample)))
+    for pr in procs:
+        pr.join(timeout=10)
+        if pr.is_alive():
+            pr.terminate()
     if errors:
-        raise errors[0]
-    lat = [x for l in all_lat for x in l]
-    return len(lat), wall, lat
+        raise RuntimeError(f"{name} failed: " + "; ".join(errors))
+    ops = sum(r[0] for r in results)
+    lat = [x for r in results for x in r[3]]
+    extra = {"clients": p.clients, "writes": sum(r[1] for r in results),
+             "lock_timeouts": sum(r[2] for r in results)}
+    return ops, wall, lat, extra  # type: ignore[return-value]
+
+
+def concurrent_reads(backend: Backend, p: Params) -> Result:
+    """p.clients users doing point reads for p.duration seconds (exercises multiple cores).
+
+    Clients are separate processes (not threads), so client-side Python never caps
+    throughput at one core: scaling reflects the machine and the database.
+    """
+    return _multi_user(backend, p, 0, "concurrent_reads")
+
+
+def concurrent_mixed(backend: Backend, p: Params) -> Result:
+    """p.clients users, 80% point reads / 20% single-row updates (each its own commit)."""
+    return _multi_user(backend, p, 20, "concurrent_mixed")
+
+
+def concurrent_writes(backend: Backend, p: Params) -> Result:
+    """p.clients users all updating random rows, one commit each: write concurrency/locking."""
+    return _multi_user(backend, p, 100, "concurrent_writes")
+
+
+MULTI_USER = ("concurrent_reads", "concurrent_mixed", "concurrent_writes")
 
 
 # Order matters: load must run first, the rest reuse its data.
@@ -185,6 +278,8 @@ WORKLOADS: Dict[str, Callable[[Backend, Params], Result]] = {
     "update": update,
     "single_commits": single_commits,
     "concurrent_reads": concurrent_reads,
+    "concurrent_mixed": concurrent_mixed,
+    "concurrent_writes": concurrent_writes,
 }
 
 PROFILES: Dict[str, Params] = {

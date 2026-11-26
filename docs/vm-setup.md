@@ -7,7 +7,7 @@ to the VM name (its hostname). Elsewhere, give a descriptive `--label` (e.g. `rp
 
 ## VMs with QEMU (`scripts/qemu-vm.sh`)
 
-Each VM is an Ubuntu 24.04 cloud image on QEMU, running on your Linux host. The host only runs
+Each VM is an Ubuntu 26.04 LTS cloud image on QEMU (`UBUNTU=noble` for 24.04), running on your Linux host. The host only runs
 QEMU. SQLite and PostgreSQL run **inside** the VM, so they get just the resources you gave it.
 
 Install on the host (Debian/Ubuntu):
@@ -29,7 +29,7 @@ sudo apt-get install qemu-system-x86 qemu-system-arm qemu-efi-aarch64 qemu-utils
 | `pi3`     | aarch64 | cortex-a53 | 4  | 1G  | 20 MB/s, 1500 IOPS | Pi 3 / Zero 2 W |
 | `pi4`     | aarch64 | cortex-a72 | 4  | 2G  | 40 MB/s, 2500 IOPS | Pi 4 |
 | `pi4-8g`  | aarch64 | cortex-a72 | 4  | 8G  | 40 MB/s, 2500 IOPS | Pi 4 8 GB |
-| `pi5`     | aarch64 | cortex-a76 | 4  | 4G  | 80 MB/s, 4000 IOPS | Pi 5 (QEMU ≥ 9.1) |
+| `pi5`     | aarch64 | cortex-a76 | 4  | 4G  | 80 MB/s, 4000 IOPS | Pi 5 (falls back to cortex-a72 if your QEMU lacks cortex-a76) |
 
 The Pi disk limits roughly imitate an SD card. They are estimates, not measurements.
 
@@ -50,6 +50,7 @@ Any setting overrides the preset, and you can skip the preset entirely:
 | `SSH_PORT` | host port forwarded to the VM's SSH | `SSH_PORT=2223` |
 | `NAME` | VM name: disk file in `vm/` and hostname | `NAME=myserver` |
 | `NO_KVM=1` | force emulation even when KVM is available | |
+| `UBUNTU` | Ubuntu release codename of the cloud image | `UBUNTU=noble` |
 
 **Ways to vary performance**, with what each one simulates:
 
@@ -76,6 +77,7 @@ run the script with `sudo`, or use `PIN` with fewer host cores instead.
   `Ctrl-A` then `X`) and start it with new settings. A new combination creates a fresh machine.
   To keep the same disk (with everything already installed), pin the name:
   `NAME=srv CORES=2 ./scripts/qemu-vm.sh`, then later `NAME=srv CORES=8 MEM=8G ./scripts/qemu-vm.sh`.
+- **SSH** is forwarded on `127.0.0.1` only, because the VM uses a fixed password and passwordless sudo.
 - **Several at once:** give each a different `SSH_PORT`. Only *benchmark* one at a time,
   because they share the host's CPU and disk.
 - **Remove:** delete `vm/<name>.qcow2` and `vm/<name>-*` files.
@@ -84,6 +86,8 @@ run the script with `sudo`, or use `PIN` with fewer host cores instead.
 
 - A VM with the **same architecture as the host** (an x86_64 VM on an x86_64 PC, or an ARM64 VM
   on an ARM64 host) uses **KVM** and runs close to native speed. Results are realistic.
+  On an ARM64 host KVM always exposes the host's own cores, so the Pi presets' CPU model is
+  replaced with `host` (use `NO_KVM=1` to emulate the exact Pi core instead).
   `/dev/kvm` must exist and be writable (add yourself to the `kvm` group).
 - A VM with a **different architecture** (ARM64/Pi VMs on an x86 PC) is **emulated** (TCG),
   roughly 5–20× slower. Compare those VMs with each other, not with real hardware.

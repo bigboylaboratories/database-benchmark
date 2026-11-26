@@ -1,8 +1,9 @@
 # Local PostgreSQL for benchmarking. Resource limits let you mimic a smaller machine:
 #   PG_CPUS=4 PG_MEM=1g docker compose up -d
+#   PG_VERSION=19 docker compose up -d      # other major version (default 18)
 services:
   postgres:
-    image: postgres:16
+    image: postgres:${PG_VERSION:-18}
     environment:
       POSTGRES_USER: bench
       POSTGRES_PASSWORD: bench

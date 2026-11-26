@@ -10,11 +10,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm]
-        python: ["3.9", "3.12"]
+        python: ["3.10", "3.15"]
     runs-on: ${{ matrix.os }}
     services:
       postgres:
-        image: postgres:16
+        image: postgres:18
         env:
           POSTGRES_USER: bench
           POSTGRES_PASSWORD: bench
@@ -25,8 +25,8 @@ jobs:
     env:
       DBBENCH_PG_DSN: postgresql://bench:bench@localhost:5432/bench
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -e '.[dev]'

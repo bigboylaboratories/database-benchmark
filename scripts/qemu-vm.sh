@@ -20,6 +20,7 @@
 #   DISK_SIZE  virtual disk size (default 16G)     SSH_PORT   host port for SSH (default 2222)
 #   NAME       VM name = disk file in vm/ and the guest hostname (default derived from settings)
 #   NO_KVM=1   force software emulation even if KVM is available
+#   UBUNTU     Ubuntu release codename for the cloud image (default resolute = 26.04 LTS)
 #
 # Host: Linux. Install:
 #   sudo apt-get install qemu-system-x86 qemu-system-arm qemu-efi-aarch64 qemu-utils cloud-image-utils curl
@@ -50,7 +51,8 @@ preset() {
 }
 
 if [ -n "${PRESET:-}" ]; then
-  read -r p_arch p_cpu p_cores p_mem p_mbps p_iops <<<"$(preset "$PRESET")"
+  spec="$(preset "$PRESET")"   # separate assignment so an unknown preset aborts (set -e)
+  read -r p_arch p_cpu p_cores p_mem p_mbps p_iops <<<"$spec"
   ARCH="${ARCH:-$p_arch}"
   CORES="${CORES:-$p_cores}"
   MEM="${MEM:-$p_mem}"
@@ -75,18 +77,30 @@ case "$ARCH" in
   aarch64|arm64) ARCH=aarch64; IMG_ARCH=arm64 ;;
   *) echo "ARCH must be x86_64 or aarch64" >&2; exit 1 ;;
 esac
-IMAGE_URL="${IMAGE_URL:-https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-${IMG_ARCH}.img}"
+UBUNTU="${UBUNTU:-resolute}"
+IMAGE_URL="${IMAGE_URL:-https://cloud-images.ubuntu.com/$UBUNTU/current/$UBUNTU-server-cloudimg-${IMG_ARCH}.img}"
 
 # KVM only when guest arch == host arch; otherwise QEMU emulates (TCG, much slower).
 ACCEL="tcg,thread=multi"
 if [ "${NO_KVM:-0}" != "1" ] && [ "$(uname -m)" = "$ARCH" ] && [ -w /dev/kvm ]; then
   ACCEL="kvm"
 fi
+if [ "$ACCEL" = "kvm" ] && [ "$ARCH" = "aarch64" ] && [ -n "${CPU:-}" ] && [ "$CPU" != host ] && [ "$CPU" != max ]; then
+  # KVM on ARM can only expose the host's own cores; named models (cortex-a72...) are TCG-only.
+  echo ">> note: KVM on ARM ignores CPU=$CPU, using the host CPU (set NO_KVM=1 to emulate $CPU)" >&2
+  CPU=host
+fi
 if [ -z "${CPU:-}" ]; then
   if [ "$ACCEL" = "kvm" ]; then CPU=host
   elif [ "$ARCH" = "x86_64" ]; then CPU=max
   else CPU=cortex-a72
   fi
+fi
+QEMU_BIN="qemu-system-$ARCH"
+command -v "$QEMU_BIN" >/dev/null || { echo "$QEMU_BIN not found (see install line at the top)" >&2; exit 1; }
+if [ "$CPU" != host ] && [ "$CPU" != max ] && ! "$QEMU_BIN" -cpu help 2>/dev/null | grep -qw -- "$CPU"; then
+  echo ">> warning: this QEMU has no CPU model '$CPU' (cortex-a76 needs a newer QEMU); using cortex-a72" >&2
+  CPU=cortex-a72
 fi
 
 # Name encodes the config so each machine gets its own disk unless you pin NAME.
@@ -136,21 +150,23 @@ throttle=""
 [ -n "$DISK_IOPS" ] && throttle="$throttle,throttling.iops-total=$DISK_IOPS"
 
 if [ "$ARCH" = "x86_64" ]; then
-  QEMU=(qemu-system-x86_64 -machine q35)
+  QEMU=("$QEMU_BIN" -machine q35)
 else
   FIRMWARE=""
   for f in /usr/share/qemu-efi-aarch64/QEMU_EFI.fd /usr/share/AAVMF/AAVMF_CODE.fd; do
     [ -f "$f" ] && FIRMWARE="$f" && break
   done
   [ -n "$FIRMWARE" ] || { echo "UEFI firmware not found (install qemu-efi-aarch64)" >&2; exit 1; }
-  QEMU=(qemu-system-aarch64 -machine virt -bios "$FIRMWARE")
+  # gic-version=max: GICv3 where available, needed for more than 8 vCPUs.
+  QEMU=("$QEMU_BIN" -machine virt,gic-version=max -bios "$FIRMWARE")
 fi
 
 QEMU+=(
   -accel "$ACCEL" -cpu "$CPU" -smp "$CORES" -m "$MEM"
   -drive "if=virtio,format=qcow2,file=$disk$throttle"
   -drive "if=virtio,format=raw,file=$seed"
-  -netdev "user,id=net0,hostfwd=tcp::$SSH_PORT-:22" -device virtio-net-pci,netdev=net0
+  # SSH only on the host's loopback: the VM has a well-known password and passwordless sudo.
+  -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" -device virtio-net-pci,netdev=net0
   -nographic
 )
 
@@ -166,4 +182,4 @@ echo ">> booting '$NAME': $ARCH, $CORES vCPU, $MEM RAM, cpu=$CPU, accel=${ACCEL%
      "${CPU_LIMIT:+, cpu limit $CPU_LIMIT}${PIN:+, pinned to host cores $PIN}" \
      "${DISK_MBPS:+, disk ${DISK_MBPS}MB/s}${DISK_IOPS:+, ${DISK_IOPS} IOPS}"
 echo ">> ssh -p $SSH_PORT bench@localhost  (password: bench)   quit QEMU: Ctrl-A then X"
-exec "${WRAP[@]}" "${QEMU[@]}"
+exec ${WRAP[@]+"${WRAP[@]}"} "${QEMU[@]}"

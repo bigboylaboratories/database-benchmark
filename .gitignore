@@ -1,21 +1,56 @@
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 venv/
 .pytest_cache/
+.coverage
+htmlcov/
 build/
 dist/
+
 # benchmark outputs (commit selectively with `git add -f`)
 results/*.json
 results/*.csv
 results/*.md
+results/*.html
 *.db
 *.db-wal
 *.db-shm
-# VM images
+*.db-journal
+
+# private PostgreSQL data directory, if DBBENCH_PG_DIR points inside the repo
+.pgdata/
+dbbench-pg/
+
+# VMs: disks, images, VMware runtime files and the generated SSH key (all live in vm/)
 vm/
 *.img
 *.qcow2
+*.vmdk
+*.vmem
+*.vmsd
+*.vmss
+*.nvram
+*.part
+id_ed25519
+id_ed25519.pub
+
 # git bundles made for manual pushing
 *.bundle
+
+# secrets / local settings
+.env
+.env.*
+.claude/settings.local.json
+
+# editors and OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+# stray file created when a Windows "NUL" redirect is run by an MSYS tool
+NUL

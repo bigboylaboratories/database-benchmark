@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dbbench"
-version = "0.1.0"
+version = "0.2.0"
 description = "Benchmark PostgreSQL and SQLite across Linux machines and VMs (x86_64, ARM64, Raspberry Pi-like)"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-postgres = ["psycopg[binary]>=3.1"]
-dev = ["pytest>=7", "psycopg[binary]>=3.1"]
+postgres = ["psycopg[binary]>=3.2"]
+dev = ["pytest>=8", "psycopg[binary]>=3.2"]
 
 [project.scripts]
 dbbench = "dbbench.cli:main"

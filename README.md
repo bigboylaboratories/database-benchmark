@@ -20,14 +20,51 @@ Then `dbbench report` compares every machine side by side.
 
 ```bash
 pip install -e '.[postgres]'           # or just `pip install -e .` for SQLite only
-docker compose up -d                   # local PostgreSQL 16 (user/pass/db: bench)
 dbbench sysinfo --verify-cores         # what is this machine, really?
-dbbench run -b all -p quick -l my-laptop
-dbbench report                         # markdown comparison of results/*.json
+dbbench run -b all -p quick --start-pg # SQLite + a private PostgreSQL, started and stopped for you
+dbbench report -f html                 # graphical report -> results/report.html
 ```
+
+`--start-pg` (and `dbbench pg start|stop|status|destroy`) runs a throwaway PostgreSQL from the
+binaries already installed (`apt install postgresql`, or the Windows/macOS installer). It has its
+own data folder and port (55432, localhost only, no password) and never touches an existing
+PostgreSQL service. You can also point at any server with `--dsn`, or use `docker compose up -d`.
 
 On a fresh Debian, Ubuntu or Raspberry Pi OS machine or VM, `./scripts/bootstrap.sh` installs
 Python, SQLite and PostgreSQL, creates the `bench` database and sets up a virtualenv.
+
+## One-command VMs on Windows (VMware Workstation)
+
+`scripts/vmware_vm.py` builds Ubuntu 26.04 VMs in VMware Workstation, which is free for personal
+use. It needs nothing else installed. Each call boots the VM headless, copies this repo in, installs,
+runs `dbbench run -b all`, copies the result JSON into `results/` and shuts the VM down:
+
+```bash
+python scripts/vmware_vm.py bench --preset x86-4c          # 4 vCPU / 4 GB
+python scripts/vmware_vm.py bench --preset pi5             # Raspberry Pi 5-sized: 4 vCPU / 4 GB
+python scripts/vmware_vm.py bench --cores 6 --mem 12G      # any size
+python scripts/vmware_vm.py bench-all                      # x86-1c,2c,4c,8c + pi4, pi5, then a report
+python scripts/vmware_vm.py list | up | stop | destroy --preset x86-4c
+```
+
+VMware only runs x86_64 guests, so the `pi*` presets copy a Pi's core count and RAM, not its ARM
+CPU. For ARM numbers use `scripts/qemu-vm.sh` on a Linux host, or a real Pi.
+
+## Like-for-like by default
+
+Both databases get the same guarantees and resources, and the HTML report prints the settings
+side by side:
+
+| | SQLite | PostgreSQL |
+|---|---|---|
+| durability | `synchronous=FULL`: every commit fsynced | `synchronous_commit=on`: every commit fsynced |
+| cache | 128 MB page cache (`--sqlite-cache-mb`) | `shared_buffers=128MB` (stock default) |
+| journal | WAL | WAL |
+| connection | in-process | Unix socket on Linux (TCP on Windows) |
+| data, SQL, indexes, client loop | identical | identical |
+
+`--sqlite-sync NORMAL` is faster but skips the per-commit fsync, so it no longer compares like
+for like.
 
 ## Workloads
 
@@ -39,15 +76,24 @@ Python, SQLite and PostgreSQL, creates the `bench` database and sets up a virtua
 | `aggregate`        | full table scan + `GROUP BY`                         | CPU, memory b/w     |
 | `update`           | random single-row updates, one commit each           | write path          |
 | `single_commits`   | one INSERT per transaction                           | **fsync / storage** |
-| `concurrent_reads` | N client threads doing point selects for a fixed time | **multi-core**      |
+| `concurrent_reads` | N client processes doing point selects for a fixed time | **multi-core**    |
+| `concurrent_mixed` | N users, 80% point reads / 20% single-row updates     | **multi-user**      |
+| `concurrent_writes`| N users all updating random rows, one commit each     | **write locking**   |
 
 Profiles set the data size: `smoke` (2k rows), `quick` (20k), `standard` (200k) and `large` (2M).
 You can override any value with `--rows`, `--ops`, `--commits`, `--clients` or `--duration`.
 Use `-w point_select,concurrent_reads` to run only some workloads.
 
+Add `--client-sweep 1,2,4,8,16` to run the three multi-user workloads at each user count; the
+HTML report charts how each database scales as users are added. SQLite allows one writer at a
+time, PostgreSQL lets users write different rows in parallel, and this is where that shows.
+
+Multi-user clients are separate processes, not threads, so Python's GIL doesn't cap it
+at one core and the result shows what the machine and the database can do with more cores.
+
 ## Benchmarking virtual machines (Linux servers and Raspberry Pis)
 
-All the VMs run on one Linux host. `scripts/qemu-vm.sh` creates an Ubuntu VM with whatever
+All the VMs run on one Linux host. `scripts/qemu-vm.sh` creates an Ubuntu 26.04 VM with whatever
 cores, RAM, CPU limit and disk speed you ask for, either x86_64 or ARM64:
 
 ```bash
@@ -71,7 +117,9 @@ dbbench run -b all -p quick               # label defaults to the VM name, e.g. 
 ```
 
 Copy the result JSON back (`scp -P 2222 'bench@localhost:database-benchmark/results/*.json' results/`),
-shut the VM down, start the next one and run `dbbench report`. See [docs/vm-setup.md](docs/vm-setup.md)
+shut the VM down, start the next one and run `dbbench report`. If a backend fails (e.g. PostgreSQL
+isn't running) the other backend's results are still saved, the error is recorded in the file and
+`dbbench run` exits with status 1. See [docs/vm-setup.md](docs/vm-setup.md)
 for every setting, how to change a machine and how to read the core check.
 
 ## Useful options
@@ -79,9 +127,11 @@ for every setting, how to change a machine and how to read the core check.
 ```bash
 dbbench run -b postgres --dsn postgresql://user:pw@host:5432/db   # or set DBBENCH_PG_DSN
 dbbench run -b sqlite --sqlite-path /mnt/sdcard/bench.db          # test a specific disk
-dbbench run -b sqlite --sqlite-sync FULL                          # durability vs speed
+dbbench run -b sqlite --sqlite-sync NORMAL                        # faster, but commits not fsynced (not like-for-like)
 PG_CPUS=2 PG_MEM=1g docker compose up -d                          # constrain the PG container
+PG_VERSION=19 docker compose up -d                                # another PostgreSQL major
 dbbench report -f csv > results/all.csv                           # for spreadsheets / plotting
+dbbench report -f html -o results/pi-vs-server.html results/a.json results/b.json   # chosen files
 ```
 
 ## Layout
@@ -93,15 +143,17 @@ dbbench/            the CLI (sysinfo, run, report)
   backends/         sqlite + postgres adapters (same SQL on both)
   runner.py         repeats, stats, JSON output
   report.py         cross-machine markdown/CSV comparison
-scripts/            bootstrap.sh (target setup), qemu-vm.sh (any VM), qemu-pi.sh (Pi shortcut)
+  pglocal.py        private throwaway PostgreSQL (`dbbench pg`, `--start-pg`)
+scripts/            bootstrap.sh (target setup), vmware_vm.py (Windows VMs), qemu-vm.sh (Linux host VMs, x86 + ARM)
 docs/vm-setup.md    VM recipes and interpretation notes
 results/            result JSON files (git-ignored; `git add -f` the ones to keep)
 ```
 
 ## Fair-comparison notes
 
-- SQLite runs in-process with WAL and `synchronous=NORMAL`. PostgreSQL goes over a socket, so
-  per-query round-trip overhead is part of what you measure. This difference is real for apps.
+- SQLite runs in-process with WAL and `synchronous=FULL` (see *Like-for-like by default*).
+  PostgreSQL goes over a socket, so per-query round-trip overhead is part of what you measure.
+  This difference is real for apps.
 - Run PostgreSQL **on the machine under test**. A remote server measures the network.
 - Close other workloads, and use `-n 5` or more on noisy VMs. Check `stdev_ops_per_s` in the JSON.
 - VMs with the same architecture as the host (x86_64 VMs on an x86_64 PC) use KVM and run
